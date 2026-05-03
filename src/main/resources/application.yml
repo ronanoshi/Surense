@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: customer-support-hub
+  profiles:
+    active: dev
+  datasource:
+    url: "jdbc:mysql://localhost:3306/csh?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC"
+    username: csh
+    password: csh-dev-password
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      connection-timeout: 30000
+      initialization-fail-timeout: 60000
+      maximum-pool-size: 10
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: false
+  jackson:
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info
+  endpoint:
+    health:
+      show-details: when-authorized
+      probes:
+        enabled: true
+
+server:
+  port: 8080
+  shutdown: graceful
+
+logging:
+  level:
+    root: INFO
+    com.cookai.csh: DEBUG
