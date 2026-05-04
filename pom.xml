@@ -89,6 +89,18 @@
 			<artifactId>logstash-logback-encoder</artifactId>
 			<version>8.0</version>
 		</dependency>
+
+		<!-- Rate limiting (Step 4b). Token-bucket algorithm; in-process, no Redis. -->
+		<dependency>
+			<groupId>com.bucket4j</groupId>
+			<artifactId>bucket4j_jdk17-core</artifactId>
+			<version>8.18.0</version>
+		</dependency>
+		<!-- Size-bounded cache for the bucket store (DoS-via-memory cap). -->
+		<dependency>
+			<groupId>com.github.ben-manes.caffeine</groupId>
+			<artifactId>caffeine</artifactId>
+		</dependency>
 	</dependencies>
 
 	<build>

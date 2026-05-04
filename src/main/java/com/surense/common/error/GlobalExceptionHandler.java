@@ -1,12 +1,10 @@
 package com.surense.common.error;
 
 import com.surense.common.error.exception.ApiException;
-import com.surense.common.i18n.MessageResolver;
-import com.surense.common.logging.CorrelationIdConstants;
+import com.surense.common.error.exception.RateLimitedException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -19,7 +17,6 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
-import java.time.Instant;
 import java.util.List;
 
 /**
@@ -33,6 +30,7 @@ import java.util.List;
  *
  * <h2>Resolution order (Spring picks the most specific match)</h2>
  * <ol>
+ *   <li>{@link RateLimitedException} — 429 with {@code Retry-After} header.</li>
  *   <li>{@link ApiException} (and subclasses) — domain failures.</li>
  *   <li>Spring Security: {@link AccessDeniedException},
  *       {@link BadCredentialsException} — authentication / authorization.</li>
@@ -47,7 +45,19 @@ import java.util.List;
 @Slf4j
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
-    private final MessageResolver messageResolver;
+    private final ErrorResponseFactory errorResponseFactory;
+
+    // ---------- rate limiting ----------
+
+    @ExceptionHandler(RateLimitedException.class)
+    public ResponseEntity<ErrorResponse> handleRateLimited(RateLimitedException ex, HttpServletRequest req) {
+        log.warn("error.rateLimited path={} retryAfterSec={}", req.getRequestURI(), ex.getRetryAfterSeconds());
+        ErrorResponse body = errorResponseFactory.build(
+                ErrorCode.RATE_LIMITED, req.getRequestURI(), ErrorResponseFactory.NO_ARGS, null);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, Long.toString(ex.getRetryAfterSeconds()));
+        return new ResponseEntity<>(body, headers, ErrorCode.RATE_LIMITED.getStatus());
+    }
 
     // ---------- domain exceptions ----------
 
@@ -65,14 +75,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<ErrorResponse> handleAccessDenied(
             AccessDeniedException ex, HttpServletRequest req) {
         log.warn("error.accessDenied path={}", req.getRequestURI());
-        return buildResponse(ErrorCode.FORBIDDEN, EMPTY_ARGS, req.getRequestURI(), null);
+        return buildResponse(ErrorCode.FORBIDDEN, ErrorResponseFactory.NO_ARGS, req.getRequestURI(), null);
     }
 
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<ErrorResponse> handleBadCredentials(
             BadCredentialsException ex, HttpServletRequest req) {
         log.warn("error.badCredentials path={}", req.getRequestURI());
-        return buildResponse(ErrorCode.BAD_CREDENTIALS, EMPTY_ARGS, req.getRequestURI(), null);
+        return buildResponse(ErrorCode.BAD_CREDENTIALS, ErrorResponseFactory.NO_ARGS, req.getRequestURI(), null);
     }
 
     // ---------- Spring framework exceptions (overrides) ----------
@@ -89,7 +99,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                         fe.getDefaultMessage() == null ? "invalid" : fe.getDefaultMessage()))
                 .toList();
         log.warn("error.validation path={} fieldCount={}", path(request), fieldErrors.size());
-        ErrorResponse body = build(ErrorCode.VALIDATION_FAILED, EMPTY_ARGS, path(request), fieldErrors);
+        ErrorResponse body = errorResponseFactory.build(
+                ErrorCode.VALIDATION_FAILED, path(request), ErrorResponseFactory.NO_ARGS, fieldErrors);
         return new ResponseEntity<>(body, ErrorCode.VALIDATION_FAILED.getStatus());
     }
 
@@ -100,7 +111,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             HttpStatusCode status,
             WebRequest request) {
         log.warn("error.malformedRequest path={}", path(request));
-        ErrorResponse body = build(ErrorCode.MALFORMED_REQUEST, EMPTY_ARGS, path(request), null);
+        ErrorResponse body = errorResponseFactory.build(
+                ErrorCode.MALFORMED_REQUEST, path(request), ErrorResponseFactory.NO_ARGS, null);
         return new ResponseEntity<>(body, ErrorCode.MALFORMED_REQUEST.getStatus());
     }
 
@@ -110,34 +122,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception ex, HttpServletRequest req) {
         log.error("error.unhandled path={} exception={}",
                 req.getRequestURI(), ex.getClass().getName(), ex);
-        return buildResponse(ErrorCode.INTERNAL_ERROR, EMPTY_ARGS, req.getRequestURI(), null);
+        return buildResponse(ErrorCode.INTERNAL_ERROR, ErrorResponseFactory.NO_ARGS, req.getRequestURI(), null);
     }
 
     // ---------- helpers ----------
-
-    private static final Object[] EMPTY_ARGS = new Object[0];
 
     private ResponseEntity<ErrorResponse> buildResponse(ErrorCode code,
                                                        Object[] args,
                                                        String path,
                                                        List<ErrorResponse.FieldError> fieldErrors) {
-        ErrorResponse body = build(code, args, path, fieldErrors);
+        Object[] safeArgs = args == null ? ErrorResponseFactory.NO_ARGS : args;
+        ErrorResponse body = errorResponseFactory.build(code, path, safeArgs, fieldErrors);
         return new ResponseEntity<>(body, code.getStatus());
-    }
-
-    private ErrorResponse build(ErrorCode code,
-                                Object[] args,
-                                String path,
-                                List<ErrorResponse.FieldError> fieldErrors) {
-        return new ErrorResponse(
-                Instant.now(),
-                code.getStatus().value(),
-                code.getStatus().getReasonPhrase(),
-                code.name(),
-                messageResolver.resolve(code, args),
-                path,
-                MDC.get(CorrelationIdConstants.MDC_KEY),
-                fieldErrors);
     }
 
     private String path(WebRequest request) {

@@ -5,9 +5,8 @@ A backend service for a small CRM-style customer-support system. Three roles
 rotation, and a clean role-aware REST API.
 
 This is a home-assignment project. The README is grown step by step alongside
-the codebase; this version reflects the work completed through **Step 4a —
-Cross-cutting infrastructure (errors + i18n + correlation-id logging + PII
-masking)**.
+the codebase; this version reflects the work completed through **Step 4b —
+Rate limiting (Bucket4j + Caffeine + two-filter pipeline)**.
 
 ---
 
@@ -214,15 +213,21 @@ com.surense
     │       ├── ResourceNotFoundException
     │       ├── ConflictException
     │       ├── BadRequestException
-    │       └── NotImplementedException
+    │       ├── NotImplementedException
+    │       └── RateLimitedException  ← 429 + Retry-After (Step 6 in-controller)
     ├── i18n/
     │   └── MessageResolver         ← MessageSource facade
-    └── logging/
-        ├── CorrelationIdConstants
-        ├── CorrelationIdFilter     ← first in filter chain
-        ├── LogMasker               ← PII regex rules
-        ├── MaskingPatternLayout    ← dev/text encoder
-        └── MaskingLogstashEncoder  ← prod/JSON encoder
+    ├── logging/
+    │   ├── CorrelationIdConstants
+    │   ├── CorrelationIdFilter     ← first in servlet filter chain
+    │   ├── LogMasker               ← PII regex rules
+    │   ├── MaskingPatternLayout    ← dev/text encoder
+    │   └── MaskingLogstashEncoder  ← prod/JSON encoder
+    └── ratelimit/                  ← Step 4b: in-process token buckets
+        ├── IpRateLimitFilter       ← before Spring Security (per-IP)
+        ├── UserRateLimitFilter     ← after Spring Security (per-userId)
+        ├── LoginRateLimiter        ← Step 6: failed logins only
+        └── RefreshTokenRateLimiter ← Step 6: per hashed refresh token
 ```
 
 Real business features (`auth/`, `users/`, `customers/`, `tickets/`) join from
@@ -262,6 +267,7 @@ The `GlobalExceptionHandler` provides:
 | Source                           | Status | `code`                       |
 | -------------------------------- | :----: | ---------------------------- |
 | `ApiException` (any subclass)    | per `ErrorCode` | per `ErrorCode`     |
+| `RateLimitedException`           | 429    | `RATE_LIMITED` (+ `Retry-After` header) |
 | `AccessDeniedException`          | 403    | `FORBIDDEN`                  |
 | `BadCredentialsException`        | 401    | `BAD_CREDENTIALS`            |
 | `MethodArgumentNotValidException`| 400    | `VALIDATION_FAILED` (+fields)|
@@ -334,6 +340,51 @@ Defence-in-depth, layered:
 4. The catch-all 500 returns a generic message — uncaught exception text is
    never returned to the client.
 
+### Rate limiting (Step 4b)
+
+In-process **token-bucket** limits via [Bucket4j](https://bucket4j.com/)
+(`com.bucket4j:bucket4j_jdk17-core` — bytecode floor Java 17, runs on this
+project's **Java 21** runtime) with buckets stored in a **size-bounded Caffeine**
+cache (`cache-max-entries` + `cache-expire-after-access` in `application.yml`).
+
+**Why two filters (Option B)?** A servlet `IpRateLimitFilter` ordered just
+after `CorrelationIdFilter` rejects anonymous floods **before** Spring
+Security runs (cheap fail-fast). A `UserRateLimitFilter` registered **after**
+`AnonymousAuthenticationFilter` applies the per-`userId` budget once the
+security context is definitive. Rationale is documented inline on both
+filters and summarized here for interview notes.
+
+| Limiter | Key | Default (YAML) | Where enforced |
+| ------- | --- | -------------- | -------------- |
+| Unauthenticated traffic | client IP (`X-Forwarded-For` first hop, else `RemoteAddr`) | 30 / minute | `IpRateLimitFilter` |
+| Authenticated traffic | `userId` from `Authentication` | 60 / minute | `UserRateLimitFilter` |
+| Failed `POST /auth/login` | `username` + client IP | 5 / 15 min | `LoginRateLimiter` (Step 6) |
+| `POST /auth/refresh` body | SHA-256 of refresh token | 10 / minute | `RefreshTokenRateLimiter` (Step 6) |
+
+**429 contract:** same `ErrorResponse` JSON as every other error (`code`:
+`RATE_LIMITED`, message from `messages.properties`) plus a `Retry-After` header
+(seconds, always ≥ 1). Servlet filters write the body directly; in-controller
+code (Step 6) may throw `RateLimitedException` which `GlobalExceptionHandler`
+maps the same way.
+
+**`X-Forwarded-For` trust:** the first comma-separated hop is treated as the
+client IP. This is correct behind a trusted reverse proxy that **strips or
+appends** the header; without such a proxy, clients can spoof IPs — document
+this assumption in deployment docs.
+
+**Test profile:** `surense.rate-limit.enabled=false` in `application-test.yml`
+so unrelated `@SpringBootTest` classes do not inherit an exhausted bucket from
+the rate-limit integration suite. Opt back in with
+`@TestPropertySource(properties = "surense.rate-limit.enabled=true")` (see
+`BoomControllerRateLimitIntegrationTest`).
+
+**Caveat:** `IpRateLimitFilter` skips the per-IP bucket when **any** non-blank
+`Authorization` header is present so JWT traffic is governed by
+`UserRateLimitFilter` instead. A client could send a junk `Authorization` value
+while still being anonymous and **skip** the IP bucket until Step 6 hardens
+this edge (e.g. validate the bearer early or re-apply IP limits for anonymous
++bogus-bearer — out of scope for Step 4b).
+
 ## API reference
 
 ### Endpoints currently implemented
@@ -364,12 +415,20 @@ docker-compose MySQL. Profile-specific files override it:
 Settings can be overridden by environment variables using Spring's standard
 mapping (e.g. `SPRING_DATASOURCE_PASSWORD`). Application-specific flags:
 
-| Property                            | Default | Purpose                                |
-| ----------------------------------- | :-----: | -------------------------------------- |
-| `surense.dev.boom-endpoint.enabled`     | `false` | Enables the temporary `BoomController` (set to `true` only in dev profile) |
+| Property | Default | Purpose |
+| -------- | :-----: | ------- |
+| `surense.dev.boom-endpoint.enabled` | `false` | Enables the temporary `BoomController` (set to `true` only in dev profile) |
+| `surense.rate-limit.enabled` | `true` (base YAML) / `false` (`test` profile) | Master switch for `IpRateLimitFilter` + `UserRateLimitFilter` |
+| `surense.rate-limit.cache-max-entries` | `100000` | Max distinct bucket keys held in Caffeine |
+| `surense.rate-limit.cache-expire-after-access` | `PT1H` | Idle bucket eviction (second memory floor beside the size cap) |
+| `surense.rate-limit.exempt-paths` | `/actuator/health`, `/actuator/health/**` | Ant patterns skipped by the servlet limiters (health / probes) |
+| `surense.rate-limit.unauth-ip.{capacity,refill}` | `30` + `PT1M` | Anonymous per-IP budget |
+| `surense.rate-limit.auth-user.{capacity,refill}` | `60` + `PT1M` | Authenticated per-userId budget |
+| `surense.rate-limit.login.{capacity,refill}` | `5` + `PT15M` | Failed-login budget (Step 6) |
+| `surense.rate-limit.refresh.{capacity,refill}` | `10` + `PT1M` | Refresh budget per hashed token (Step 6) |
 
-More configuration points (JWT secret, ADMIN seed credentials, rate-limit
-defaults) will be documented as they are introduced.
+Further auth-related settings (JWT secret, ADMIN seed credentials) land in
+Step 6.
 
 ## Localization
 
@@ -408,7 +467,7 @@ the raw message key) if a locale or key is missing.
 | ---- | ------------------------------------------------ | ------------ |
 | 3    | Project skeleton & infrastructure-up             | ✅ complete  |
 | 4a   | Errors + i18n + correlation-id logs + PII masking | ✅ complete |
-| 4b   | Rate limiting                                    | ⏳ next      |
+| 4b   | Rate limiting                                    | ✅ complete  |
 | 5    | DB schema & domain skeleton                      | ⏳ planned   |
 | 6    | Auth: login / refresh / logout                   | ⏳ planned   |
 | 7+   | Features (customers, tickets, …)                 | ⏳ planned   |

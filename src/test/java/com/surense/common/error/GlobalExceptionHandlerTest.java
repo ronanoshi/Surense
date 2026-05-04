@@ -3,6 +3,7 @@ package com.surense.common.error;
 import com.surense.common.error.exception.BadRequestException;
 import com.surense.common.error.exception.ConflictException;
 import com.surense.common.error.exception.NotImplementedException;
+import com.surense.common.error.exception.RateLimitedException;
 import com.surense.common.error.exception.ResourceNotFoundException;
 import com.surense.common.i18n.MessageResolver;
 import com.surense.common.logging.CorrelationIdConstants;
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.context.support.ResourceBundleMessageSource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
@@ -31,7 +33,8 @@ class GlobalExceptionHandlerTest {
         ms.setBasename("messages");
         ms.setDefaultEncoding("UTF-8");
         ms.setUseCodeAsDefaultMessage(false);
-        handler = new GlobalExceptionHandler(new MessageResolver(ms));
+        MessageResolver messageResolver = new MessageResolver(ms);
+        handler = new GlobalExceptionHandler(new ErrorResponseFactory(messageResolver));
         LocaleContextHolder.setLocale(Locale.ENGLISH);
         MDC.put(CorrelationIdConstants.MDC_KEY, "test-corr-id");
     }
@@ -40,6 +43,22 @@ class GlobalExceptionHandlerTest {
     void tearDown() {
         LocaleContextHolder.resetLocaleContext();
         MDC.clear();
+    }
+
+    @Test
+    void handleRateLimited_maps429WithRetryAfterHeader() {
+        RateLimitedException ex = new RateLimitedException(42);
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/api/v1/foo");
+
+        ResponseEntity<ErrorResponse> resp = handler.handleRateLimited(ex, req);
+
+        assertThat(resp.getStatusCode().value()).isEqualTo(429);
+        assertThat(resp.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("42");
+        assertThat(resp.getBody()).isNotNull();
+        assertThat(resp.getBody().code()).isEqualTo("RATE_LIMITED");
+        assertThat(resp.getBody().message()).isEqualTo("Too many requests; please try again later");
+        assertThat(resp.getBody().path()).isEqualTo("/api/v1/foo");
+        assertThat(resp.getBody().correlationId()).isEqualTo("test-corr-id");
     }
 
     @Test

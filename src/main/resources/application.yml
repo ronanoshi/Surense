@@ -44,3 +44,42 @@ logging:
   level:
     root: INFO
     com.surense: DEBUG
+
+# ---------------------------------------------------------------------------
+# Rate limiting (Step 4b). In-process token-bucket via Bucket4j, with a
+# Caffeine size-cap on the bucket store to bound memory under attack.
+#
+# Two filters protect the request pipeline:
+#   - IpRateLimitFilter   (BEFORE Spring Security) — keys on client IP for
+#                          unauthenticated requests; fails fast so the
+#                          security chain isn't run for a flood of garbage.
+#   - UserRateLimitFilter (AFTER Spring Security)  — keys on userId for
+#                          authenticated requests.
+#
+# The login + refresh limits are wired in Step 6 by AuthService; the bucket
+# specs live here today so the contract is in one place.
+# ---------------------------------------------------------------------------
+surense:
+  rate-limit:
+    cache-max-entries: 100000
+    # Second memory floor: idle buckets are dropped after this quiet period even
+    # when the store is far below cache-max-entries (see README).
+    cache-expire-after-access: PT1H
+    exempt-paths:
+      - /actuator/health
+      - /actuator/health/**
+    # IpRateLimitFilter + UserRateLimitFilter (see README). Turned off in the
+    # test profile so other @SpringBootTest classes do not inherit a hot bucket.
+    enabled: true
+    unauth-ip:
+      capacity: 30
+      refill: PT1M       # 30 requests / minute
+    auth-user:
+      capacity: 60
+      refill: PT1M       # 60 requests / minute
+    login:
+      capacity: 5
+      refill: PT15M      # 5 failed attempts / 15 minutes
+    refresh:
+      capacity: 10
+      refill: PT1M       # 10 refresh calls / minute
