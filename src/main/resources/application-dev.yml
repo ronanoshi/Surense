@@ -1,6 +1,11 @@
 logging:
   level:
     root: INFO
-    com.cookai.csh: DEBUG
+    com.surense: DEBUG
     org.springframework.web: INFO
     org.hibernate.SQL: DEBUG
+
+surense:
+  dev:
+    boom-endpoint:
+      enabled: true

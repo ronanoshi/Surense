@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Profile-conditional Logback configuration with PII masking applied
+    uniformly to both output formats.
+
+        dev | default | test  → human-readable colored text via
+                                MaskingPatternLayout (delegates to LogMasker)
+        prod                  → JSON via MaskingLogstashEncoder (delegates to
+                                the same LogMasker)
+
+    The MDC keys (correlationId, userId, userRole) are populated by
+    CorrelationIdFilter and (from Step 6 onwards) JwtAuthenticationFilter.
+-->
+<configuration scan="true" scanPeriod="30 seconds">
+
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <property name="LOG_PATTERN_DEV"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %clr(%5p) %clr(%-15.15thread){faint} [corr=%X{correlationId:--},user=%X{userId:--},role=%X{userRole:--}] %clr(%-40.40logger{39}){cyan} : %m%n%wEx"/>
+
+    <springProfile name="dev | default | test">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
+                <layout class="com.surense.common.logging.MaskingPatternLayout">
+                    <pattern>${LOG_PATTERN_DEV}</pattern>
+                </layout>
+                <charset>UTF-8</charset>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <springProfile name="prod">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="com.surense.common.logging.MaskingLogstashEncoder">
+                <includeMdcKeyName>correlationId</includeMdcKeyName>
+                <includeMdcKeyName>userId</includeMdcKeyName>
+                <includeMdcKeyName>userRole</includeMdcKeyName>
+                <fieldNames>
+                    <timestamp>timestamp</timestamp>
+                    <message>message</message>
+                    <thread>thread</thread>
+                    <logger>logger</logger>
+                    <level>level</level>
+                    <levelValue>[ignore]</levelValue>
+                    <stackTrace>stackTrace</stackTrace>
+                </fieldNames>
+                <customFields>{"service":"customer-support-hub"}</customFields>
+            </encoder>
+        </appender>
+    </springProfile>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <logger name="com.surense" level="DEBUG"/>
+
+</configuration>

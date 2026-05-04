@@ -4,9 +4,9 @@ spring:
   profiles:
     active: dev
   datasource:
-    url: "jdbc:mysql://localhost:3306/csh?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC"
-    username: csh
-    password: csh-dev-password
+    url: "jdbc:mysql://localhost:3306/surense?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC"
+    username: surense
+    password: surense-dev-password
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       connection-timeout: 30000
@@ -43,4 +43,4 @@ server:
 logging:
   level:
     root: INFO
-    com.cookai.csh: DEBUG
+    com.surense: DEBUG

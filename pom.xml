@@ -8,7 +8,7 @@
 		<version>3.5.14</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
-	<groupId>com.cookai</groupId>
+	<groupId>com.surense</groupId>
 	<artifactId>customer-support-hub</artifactId>
 	<version>0.0.1-SNAPSHOT</version>
 	<name>customer-support-hub</name>
@@ -83,6 +83,11 @@
 			<groupId>com.h2database</groupId>
 			<artifactId>h2</artifactId>
 			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>net.logstash.logback</groupId>
+			<artifactId>logstash-logback-encoder</artifactId>
+			<version>8.0</version>
 		</dependency>
 	</dependencies>
 

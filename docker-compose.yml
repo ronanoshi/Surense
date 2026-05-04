@@ -1,26 +1,26 @@
 services:
   mysql:
     image: mysql:8.4
-    container_name: csh-mysql
+    container_name: surense-mysql
     restart: unless-stopped
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     environment:
-      MYSQL_DATABASE: csh
-      MYSQL_USER: csh
-      MYSQL_PASSWORD: csh-dev-password
-      MYSQL_ROOT_PASSWORD: csh-dev-root
+      MYSQL_DATABASE: surense
+      MYSQL_USER: surense
+      MYSQL_PASSWORD: surense-dev-password
+      MYSQL_ROOT_PASSWORD: surense-dev-root
     ports:
       - "3306:3306"
     volumes:
-      - csh-mysql-data:/var/lib/mysql
+      - surense-mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "csh", "-pcsh-dev-password"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "surense", "-pcsh-dev-password"]
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 30s
 
 volumes:
-  csh-mysql-data:
+  surense-mysql-data:

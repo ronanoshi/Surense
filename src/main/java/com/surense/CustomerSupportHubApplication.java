@@ -1,4 +1,4 @@
-package com.cookai.csh;
+package com.surense;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
