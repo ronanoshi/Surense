@@ -43,7 +43,7 @@ public class TicketController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAnyRole('ADMIN','AGENT')")
+    @PreAuthorize("hasAnyRole('ADMIN','CUSTOMER')")
     public ResponseEntity<TicketResponse> createTicket(@Valid @RequestBody CreateTicketRequest req) {
         TicketResponse body = ticketService.createTicket(req);
         return ResponseEntity.status(HttpStatus.CREATED).body(body);

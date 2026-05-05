@@ -101,26 +101,23 @@ public class TicketService {
     @Transactional
     public TicketResponse createTicket(CreateTicketRequest req) {
         UserPrincipal p = SecurityUtils.requireCurrentUser();
-        if (p.role() != UserRole.ADMIN && p.role() != UserRole.AGENT) {
-            throw new AccessDeniedException("Cannot create tickets");
-        }
-        Customer customer = customerRepository.findById(req.customerId())
-                .orElseThrow(() -> ResourceNotFoundException.customer(req.customerId()));
-        assertStaffCanAccessCustomerForTicket(customer, p);
+        Customer customer = switch (p.role()) {
+            case ADMIN -> {
+                if (req.customerId() == null) {
+                    throw BadRequestException.generic();
+                }
+                yield customerRepository.findById(req.customerId())
+                        .orElseThrow(() -> ResourceNotFoundException.customer(req.customerId()));
+            }
+            case CUSTOMER -> customerRepository.findByLinkedUserId(p.id())
+                    .orElseThrow(() -> new AccessDeniedException("No customer profile linked to this account"));
+            default -> throw new AccessDeniedException("Cannot create tickets");
+        };
         Ticket tick = new Ticket(customer, req.subject(), TicketStatus.OPEN);
         if (req.body() != null && !req.body().isBlank()) {
             tick.setBody(req.body());
         }
         return toResponse(ticketRepository.save(tick));
-    }
-
-    private void assertStaffCanAccessCustomerForTicket(Customer customer, UserPrincipal p) {
-        if (p.role() == UserRole.ADMIN) {
-            return;
-        }
-        if (!customer.getCreatedByAgent().getId().equals(p.id())) {
-            throw new AccessDeniedException("Cannot open tickets for this customer");
-        }
     }
 
     @Transactional

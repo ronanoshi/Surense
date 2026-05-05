@@ -22,7 +22,7 @@ class RateLimitRequestInspectorTest {
                 .isTrue();
         Assertions.assertThat(RateLimitRequestInspector.matchesAnyExemptPath("/actuator/health/liveness", patterns))
                 .isTrue();
-        Assertions.assertThat(RateLimitRequestInspector.matchesAnyExemptPath("/__test__/boom", patterns))
+        Assertions.assertThat(RateLimitRequestInspector.matchesAnyExemptPath("/api/v1/customers", patterns))
                 .isFalse();
     }
 

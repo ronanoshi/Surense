@@ -27,4 +27,8 @@ public class ConflictException extends ApiException {
     public static ConflictException generic() {
         return new ConflictException(ErrorCode.RESOURCE_CONFLICT);
     }
+
+    public static ConflictException customerLoginAlreadyLinked() {
+        return new ConflictException(ErrorCode.CUSTOMER_LOGIN_ALREADY_LINKED);
+    }
 }

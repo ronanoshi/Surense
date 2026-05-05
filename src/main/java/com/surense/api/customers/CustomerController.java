@@ -46,7 +46,7 @@ public class CustomerController {
     }
 
     @PatchMapping("/{id}")
-    @PreAuthorize("hasAnyRole('ADMIN','AGENT')")
+    @PreAuthorize("hasAnyRole('ADMIN','AGENT','CUSTOMER')")
     public CustomerResponse updateCustomer(@PathVariable long id,
                                            @Valid @RequestBody UpdateCustomerRequest req) {
         return customerService.updateCustomer(id, req);

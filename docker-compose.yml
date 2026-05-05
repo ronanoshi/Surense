@@ -16,11 +16,26 @@ services:
     volumes:
       - surense-mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "surense", "-pcsh-dev-password"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "surense", "-psurense-dev-password"]
       interval: 10s
       timeout: 5s
       retries: 6
       start_period: 30s
+
+  app:
+    build: .
+    container_name: surense-app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/surense?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: surense
+      SPRING_DATASOURCE_PASSWORD: surense-dev-password
+    depends_on:
+      mysql:
+        condition: service_healthy
 
 volumes:
   surense-mysql-data:

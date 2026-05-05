@@ -5,11 +5,10 @@ A backend service for a small CRM-style customer-support system. Three roles
 rotation, and a clean role-aware REST API.
 
 This is a home-assignment project. The README is grown step by step alongside
-the codebase; this version reflects the work completed through **Step 7 —
-role-aware CRM APIs** (`/api/v1/customers`, `/api/v1/tickets`) on top of
-**Step 6 — JWT authentication** (`POST /api/v1/auth/login|refresh|logout`), opaque
-refresh-token persistence with rotation / reuse detection, and login /
-refresh rate limiting wired to Bucket4j.
+the codebase. Current scope: **JWT authentication** (`POST /api/v1/auth/login|refresh|logout`)
+with opaque refresh-token persistence (rotation / reuse detection), **role-aware CRM**
+APIs (`/api/v1/customers`, `/api/v1/tickets`), login and refresh rate limiting (Bucket4j),
+a **`Dockerfile`** and **`docker-compose`** (MySQL + optional **`app`** service), and behavior aligned with the brief (**CUSTOMER** users with a linked CRM login create tickets for that CRM row; **ADMIN** may perform any CRM/ticket action; **AGENT** maintains CRM profiles they created—including linking **CUSTOMER** logins—and updates ticket workflow via **`PATCH`**).
 
 ---
 
@@ -25,6 +24,16 @@ refresh rate limiting wired to Bucket4j.
 - **Lombok** for boilerplate reduction
 - **JJWT 0.12** — HS256 access JWTs (runtime-only jjwt-impl + jjwt-jackson)
 
+### Security model (“Spring OAuth” vs. this codebase)
+
+The assignment mentions **Spring OAuth**. This project implements **Spring Security**
+with a credential-based **`POST /api/v1/auth/login`** flow and **Bearer JWT** access
+tokens for subsequent requests—plus **opaque refresh tokens** stored in MySQL with
+rotation (a practical analogue to an OAuth 2.0 refresh grant) via **`POST /api/v1/auth/refresh`**.
+It intentionally does **not** ship a full **OAuth 2.0 Authorization Server** (for example
+Spring Authorization Server): that would be substantially heavier than needed for the exercise,
+while still demonstrating token issuance, refresh, revocation (`logout`), and protected resources.
+
 ## Prerequisites
 
 - Java 21 JDK on the `PATH` (`java -version` should report `21.x`)
@@ -35,28 +44,57 @@ refresh rate limiting wired to Bucket4j.
 
 ## Quick start
 
-```bash
-# 1. Start MySQL in the background
-docker compose up -d
+**Option A — MySQL in Docker, Spring Boot on the host (best for debugging)**
 
-# 2. Wait for it to be healthy (10–30s on first run)
+```bash
+docker compose up -d mysql
+
 docker compose ps           # mysql STATUS should read "healthy"
 
-# 3. Run the service (uses the dev profile by default → text logs)
-./mvnw spring-boot:run      # on Windows: .\mvnw.cmd spring-boot:run
+./mvnw spring-boot:run      # Windows: .\mvnw.cmd spring-boot:run
 
-# 4. Verify the service is up
 curl http://localhost:8080/actuator/health
-# expected: {"status":"UP","groups":["liveness","readiness"]}
 ```
 
-To stop everything:
+**Option B — MySQL + API container**
 
 ```bash
-# Ctrl+C the spring-boot:run shell, then:
+docker compose up -d --build
+```
+
+Builds the **`Dockerfile`** image and starts **`mysql`** (healthy first) then **`app`** on **8080**.
+
+To stop containers:
+
+```bash
 docker compose down            # keeps MySQL data volume
 docker compose down -v         # also wipes the data volume
 ```
+
+### Customer login ↔ CRM record (`customers.user_id`)
+
+End-customers authenticate as **`CUSTOMER`** users (`users` table). Opening tickets requires that login to be linked to **exactly one** CRM **`customers`** row (`customers.user_id → users.id`). Provision that link when onboarding self-service access:
+
+- **`POST /api/v1/customers`** — optional JSON field **`linkedCustomerUsername`**: links an existing **`CUSTOMER`**-role login (`users.username`) to the new CRM row.
+- **`PATCH /api/v1/customers/{id}`** — optional **`linkedCustomerUsername`**: same, allowed for **`ADMIN`** or the owning **`AGENT`** (not for self-service **`CUSTOMER`** updates).
+
+If no suitable login exists yet, create the **`CUSTOMER`** user first (out-of-band or via your user-provisioning process), then create or patch the CRM row with **`linkedCustomerUsername`**. Link conflicts (**409** `CUSTOMER_LOGIN_ALREADY_LINKED`) mean that login is already tied to another CRM record.
+
+### Container image (`Dockerfile`)
+
+The repo root **`Dockerfile`** builds a runnable image with **multi-stage** Maven + JRE (no local `mvn package` required). The container only runs the app—you still need a reachable MySQL and JDBC settings (same as local dev). Example:
+
+```bash
+docker build -t surense:dev .
+
+docker run --rm -p 8080:8080 \
+  -e SPRING_DATASOURCE_URL='jdbc:mysql://host.docker.internal:3306/surense?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC' \
+  -e SPRING_DATASOURCE_USERNAME=surense \
+  -e SPRING_DATASOURCE_PASSWORD=surense-dev-password \
+  surense:dev
+```
+
+Adjust `SPRING_DATASOURCE_*` for your network (same-host DB often uses `host.docker.internal` on Docker Desktop; Linux may need `--network host` or an explicit DB container hostname).
 
 To see the **production-shape JSON logs** locally:
 
@@ -100,33 +138,27 @@ With the app running (`.\mvnw.cmd spring-boot:run`), in a second PowerShell tab:
 # Health
 curl.exe http://localhost:8080/actuator/health
 
-# Happy path on the dev-only boom endpoint
-curl.exe -i "http://localhost:8080/__test__/boom?type=ok"
+# Unauthenticated CRM call → 401 JSON error body
+curl.exe -i http://localhost:8080/api/v1/customers
 
-# Every implemented error branch
-curl.exe -i "http://localhost:8080/__test__/boom?type=notfound"
-curl.exe -i "http://localhost:8080/__test__/boom?type=conflict"
-curl.exe -i "http://localhost:8080/__test__/boom?type=badrequest"
-curl.exe -i "http://localhost:8080/__test__/boom?type=notimplemented"
-curl.exe -i "http://localhost:8080/__test__/boom?type=forbidden"
-curl.exe -i "http://localhost:8080/__test__/boom?type=unauthenticated"
-curl.exe -i "http://localhost:8080/__test__/boom?type=unhandled"
-
-# Validation failure (returns 400 with fieldErrors)
+# Login validation failure → 400 + fieldErrors (blank username)
 curl.exe -i -X POST -H "Content-Type: application/json" `
-    --data-raw '{\"name\":\"\",\"email\":\"not-an-email\"}' `
-    http://localhost:8080/__test__/boom/validate
+    --data-raw '{\"username\":\"\",\"password\":\"x\"}' `
+    http://localhost:8080/api/v1/auth/login
 
-# Malformed JSON (returns 400 MALFORMED_REQUEST)
+# Malformed JSON on login → 400 MALFORMED_REQUEST
 curl.exe -i -X POST -H "Content-Type: application/json" `
     --data-raw '{ this is not json' `
-    http://localhost:8080/__test__/boom/validate
+    http://localhost:8080/api/v1/auth/login
 
-# Send your own correlation id and watch it echoed back in the response
-# header AND in the body's correlationId field
+# Send your own correlation id — echoed in the response header and body's correlationId
 curl.exe -i -H "X-Correlation-Id: my-trace-id-123" `
-    "http://localhost:8080/__test__/boom?type=notfound"
+    http://localhost:8080/api/v1/customers
 ```
+
+For deeper **error-code coverage** (404, 409, 429, etc.), use the suite under
+`src/test/java` (`GlobalExceptionHandlerTest`, `AuthControllerIntegrationTest`,
+`CrmApiIntegrationTest`, `UnauthenticatedIpRateLimitIntegrationTest`).
 
 > Use **`curl.exe`** (with `.exe`) explicitly in PowerShell — bare `curl` is a
 > PowerShell alias for `Invoke-WebRequest`, which has different flags. The
@@ -189,8 +221,8 @@ In Cursor (with the **Extension Pack for Java** installed):
 2. Click "Run and Debug" → choose **Attach to Java Process** → host `localhost`,
    port `5005`. Cursor will create a `.vscode/launch.json` entry the first time.
 3. Drop a breakpoint in any `.java` file (e.g.
-   `api/dev/BoomController.java`) and
-   `curl` the endpoint that hits it — execution pauses on the breakpoint.
+   `api/tickets/TicketController.java`) and call the matching HTTP route —
+   execution pauses on the breakpoint.
 
 `suspend=n` means the app starts immediately without waiting for the
 debugger. Switch to `suspend=y` if you need to debug startup itself — the JVM
@@ -210,7 +242,6 @@ com.surense
 │   │   └── dto/
 │   ├── tickets/                    ← Step 7: TicketController + DTOs
 │   │   └── dto/
-│   └── dev/                        ← TEMPORARY — BoomController only (dev profile)
 ├── service/
 │   ├── auth/                       ← Step 6: AuthService (JWT + opaque refresh rotation)
 │   ├── customers/                  ← Step 7: CustomerService
@@ -394,7 +425,7 @@ this assumption in deployment docs.
 so unrelated `@SpringBootTest` classes do not inherit an exhausted bucket from
 the rate-limit integration suite. Opt back in with
 `@TestPropertySource(properties = "surense.rate-limit.enabled=true")` (see
-`BoomControllerRateLimitIntegrationTest`).
+`UnauthenticatedIpRateLimitIntegrationTest`).
 
 **Caveat:** `IpRateLimitFilter` skips the per-IP bucket when **any** non-blank
 `Authorization` header is present so JWT traffic is governed by
@@ -415,14 +446,12 @@ this edge (e.g. validate the bearer early or re-apply IP limits for anonymous
 | `POST /api/v1/auth/logout` | 204 / 401 | JSON `{ refreshToken }` → deletes refresh row (session ends) |
 | `GET /api/v1/customers` | 200 / 401 / 403 | List customers (scope: **ADMIN** all, **AGENT** own creations, **CUSTOMER** linked profile) |
 | `GET /api/v1/customers/{id}` | 200 / 403 / 404 | Customer detail (same scope rules as list) |
-| `POST /api/v1/customers` | 201 / 400 / 401 / 403 / 409 | **ADMIN**, **AGENT** — JSON `{ email, displayName, phoneNumber? }`; conflict if email exists |
-| `PATCH /api/v1/customers/{id}` | 200 / 400 / 401 / 403 / 404 | **ADMIN**, **AGENT** — JSON `{ displayName, phoneNumber? }`; agent only for rows they created |
+| `POST /api/v1/customers` | 201 / 400 / 401 / 403 / 409 | **ADMIN**, **AGENT** — `{ email, displayName, phoneNumber?, linkedCustomerUsername? }`; optional **`linkedCustomerUsername`** links a **`CUSTOMER`**-role login to this CRM row |
+| `PATCH /api/v1/customers/{id}` | 200 / 400 / 401 / 403 / 404 / 409 | **ADMIN** (any row), **AGENT** (rows they created), **CUSTOMER** (own linked row) — `{ displayName, phoneNumber?, linkedCustomerUsername? }`; **`linkedCustomerUsername`** only for **ADMIN** / owning **AGENT** |
 | `GET /api/v1/tickets` | 200 / 401 / 403 | Optional query `customerId`, `status` — **CUSTOMER** sees own linked customer only; **AGENT** sees tickets for customers they created; **ADMIN** sees all |
 | `GET /api/v1/tickets/{id}` | 200 / 403 / 404 | Ticket detail with same read rules |
-| `POST /api/v1/tickets` | 201 / 400 / 401 / 403 / 404 | **ADMIN**, **AGENT** — JSON `{ customerId, subject, body? }`; agent only if they created the customer |
+| `POST /api/v1/tickets` | 201 / 400 / 401 / 403 / 404 | **ADMIN** — `{ customerId, subject, body? }`; **CUSTOMER** — `{ subject, body? }` (customer inferred from login; **403** if no linked profile) |
 | `PATCH /api/v1/tickets/{id}` | 200 / 400 / 401 / 403 / 404 | **ADMIN**, **AGENT** — partial update `{ subject?, body?, status?, assignedToAgentId? }`; empty body → 400 |
-| `GET /__test__/boom`      | varies | **dev-only**, exercises error pipeline  |
-| `POST /__test__/boom/validate` | varies | **dev-only**, demos validation/malformed |
 
 ### Auth: example requests
 
@@ -557,12 +586,6 @@ Invoke-RestMethod -Uri "http://localhost:8080/api/v1/customers" `
 
 **PowerShell:** use **`curl.exe`** for Unix-style `curl` flags (`-sS`, `-X`, `-d`). Plain **`curl`** is an alias for **`Invoke-WebRequest`**, which uses **`-Method`** instead of **`-X`** and different body rules.
 
-The `/__test__/boom` endpoint is **temporary** and gated by
-`surense.dev.boom-endpoint.enabled=true` (set only in dev profile). It may be
-removed in a later cleanup now that CRM routes exist. Supported `?type=`
-values: `ok`, `notfound`, `ticketnotfound`, `conflict`, `badrequest`,
-`notimplemented`, `forbidden`, `unauthenticated`, `unhandled`.
-
 ## Configuration
 
 `application.yml` (base) is dev-friendly out of the box and assumes the local
@@ -579,7 +602,6 @@ mapping (e.g. `SPRING_DATASOURCE_PASSWORD`). Application-specific flags:
 
 | Property | Default | Purpose |
 | -------- | :-----: | ------- |
-| `surense.dev.boom-endpoint.enabled` | `false` | Enables the temporary `BoomController` (set to `true` only in dev profile) |
 | `surense.rate-limit.enabled` | `true` (base YAML) / `false` (`test` profile) | Master switch for `IpRateLimitFilter` + `UserRateLimitFilter` |
 | `surense.rate-limit.cache-max-entries` | `100000` | Max distinct bucket keys held in Caffeine |
 | `surense.rate-limit.cache-expire-after-access` | `PT1H` | Idle bucket eviction (second memory floor beside the size cap) |
@@ -636,7 +658,8 @@ the raw message key) if a locale or key is missing.
 | 5    | DB schema & domain skeleton                      | ✅ complete  |
 | 6    | Auth: login / refresh / logout                   | ✅ complete  |
 | 7    | CRM: customers & tickets (role-aware REST)        | ✅ complete  |
-| 8+   | Further features / integrations                   | ⏳ planned   |
+| 8    | Assignment alignment + Dockerfile + remove dev-only test harness | ✅ complete  |
+| 9+   | Further features / integrations                   | ⏳ planned   |
 
 ## License
 

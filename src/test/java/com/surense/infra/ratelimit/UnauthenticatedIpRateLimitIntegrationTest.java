@@ -1,4 +1,4 @@
-package com.surense.api.dev;
+package com.surense.infra.ratelimit;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,22 +21,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
-@TestPropertySource(properties = {
-        "surense.dev.boom-endpoint.enabled=true",
-        "surense.rate-limit.enabled=true"
-})
-class BoomControllerRateLimitIntegrationTest {
+@TestPropertySource(properties = "surense.rate-limit.enabled=true")
+class UnauthenticatedIpRateLimitIntegrationTest {
+
+    private static final String RATE_LIMIT_PROBE_PATH = "/api/v1/customers";
 
     @Autowired
     private MockMvc mockMvc;
 
     @Test
-    void unauthIpLimiter_blocks31stBoomRequestWith429UnifiedBodyAndRetryAfter() throws Exception {
+    void unauthIpLimiter_blocks31stUnauthenticatedApiRequestWith429UnifiedBodyAndRetryAfter() throws Exception {
         for (int i = 0; i < 30; i++) {
-            mockMvc.perform(get("/__test__/boom").param("type", "ok"))
-                    .andExpect(status().isOk());
+            mockMvc.perform(get(RATE_LIMIT_PROBE_PATH))
+                    .andExpect(status().isUnauthorized());
         }
-        mockMvc.perform(get("/__test__/boom").param("type", "ok"))
+        mockMvc.perform(get(RATE_LIMIT_PROBE_PATH))
                 .andExpect(status().isTooManyRequests())
                 .andExpect(header().exists("Retry-After"))
                 .andExpect(header().exists("X-Correlation-Id"))
@@ -44,7 +43,7 @@ class BoomControllerRateLimitIntegrationTest {
                 .andExpect(jsonPath("$.status").value(429))
                 .andExpect(jsonPath("$.error").value("Too Many Requests"))
                 .andExpect(jsonPath("$.message").value("Too many requests; please try again later"))
-                .andExpect(jsonPath("$.path").value("/__test__/boom"))
+                .andExpect(jsonPath("$.path").value(RATE_LIMIT_PROBE_PATH))
                 .andExpect(jsonPath("$.correlationId").isNotEmpty())
                 .andExpect(jsonPath("$.fieldErrors").doesNotExist());
     }

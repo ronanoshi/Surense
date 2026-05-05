@@ -24,6 +24,8 @@ public enum ErrorCode {
     VALIDATION_FAILED(HttpStatus.BAD_REQUEST, "error.validation.failed"),
     MALFORMED_REQUEST(HttpStatus.BAD_REQUEST, "error.request.malformed"),
     BAD_REQUEST(HttpStatus.BAD_REQUEST, "error.request.bad"),
+    CUSTOMER_LOGIN_NOT_FOUND(HttpStatus.BAD_REQUEST, "error.customer.customerLoginNotFound"),
+    CUSTOMER_LOGIN_WRONG_ROLE(HttpStatus.BAD_REQUEST, "error.customer.customerLoginWrongRole"),
 
     // 401 — authentication
     BAD_CREDENTIALS(HttpStatus.UNAUTHORIZED, "error.auth.badCredentials"),
@@ -44,6 +46,7 @@ public enum ErrorCode {
     USERNAME_ALREADY_EXISTS(HttpStatus.CONFLICT, "error.user.usernameTaken"),
     EMAIL_ALREADY_EXISTS(HttpStatus.CONFLICT, "error.user.emailTaken"),
     RESOURCE_CONFLICT(HttpStatus.CONFLICT, "error.resource.conflict"),
+    CUSTOMER_LOGIN_ALREADY_LINKED(HttpStatus.CONFLICT, "error.customer.customerLoginAlreadyLinked"),
 
     // 429 — rate limiting (used Step 4b)
     RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "error.rate.limited"),

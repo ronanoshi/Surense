@@ -22,7 +22,7 @@ logging:
     com.surense: INFO
 
 # Rate-limit servlet filters off by default in tests — see application.yml and
-# BoomControllerRateLimitIntegrationTest for the opt-in suite.
+# UnauthenticatedIpRateLimitIntegrationTest for the opt-in suite.
 surense:
   rate-limit:
     enabled: false

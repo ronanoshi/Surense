@@ -67,6 +67,7 @@ class CrmApiIntegrationTest {
     private User agent1;
     private User agent2;
     private User endCustomer;
+    private User customerUserWithoutProfile;
     private Customer custMine;
     private Customer custOther;
     private Customer custLinked;
@@ -84,6 +85,8 @@ class CrmApiIntegrationTest {
         agent1 = userRepository.save(new User("crm_agent1", passwordEncoder.encode("secret"), UserRole.AGENT));
         agent2 = userRepository.save(new User("crm_agent2", passwordEncoder.encode("secret"), UserRole.AGENT));
         endCustomer = userRepository.save(new User("crm_bob", passwordEncoder.encode("secret"), UserRole.CUSTOMER));
+        customerUserWithoutProfile =
+                userRepository.save(new User("crm_orphan", passwordEncoder.encode("secret"), UserRole.CUSTOMER));
 
         custMine = customerRepository.save(new Customer("mine@crm.test", "Mine", agent1));
         custOther = customerRepository.save(new Customer("other@crm.test", "Other", agent2));
@@ -144,7 +147,7 @@ class CrmApiIntegrationTest {
 
     @Test
     void createCustomer_duplicateEmail_conflict() throws Exception {
-        String body = objectMapper.writeValueAsString(new CreateCustomerRequest("mine@crm.test", "Dup", null));
+        String body = objectMapper.writeValueAsString(new CreateCustomerRequest("mine@crm.test", "Dup", null, null));
         mockMvc.perform(post("/api/v1/customers")
                         .header("Authorization", bearer(agent1))
                         .contentType(MediaType.APPLICATION_JSON)
@@ -195,23 +198,185 @@ class CrmApiIntegrationTest {
     }
 
     @Test
-    void agent_createsTicket_forOwnCustomer_created() throws Exception {
+    void customer_createsTicket_forLinkedProfile_created() throws Exception {
+        mockMvc.perform(post("/api/v1/tickets")
+                        .header("Authorization", bearer(endCustomer))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"From customer\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subject").value("From customer"))
+                .andExpect(jsonPath("$.customerId").value(custLinked.getId().intValue()));
+    }
+
+    @Test
+    void agent_cannotCreateTicket() throws Exception {
         mockMvc.perform(post("/api/v1/tickets")
                         .header("Authorization", bearer(agent1))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"customerId\":" + custMine.getId() + ",\"subject\":\"Fresh\"}"))
+                        .content("{\"subject\":\"Nope\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void admin_createsTicket_withCustomerId_created() throws Exception {
+        mockMvc.perform(post("/api/v1/tickets")
+                        .header("Authorization", bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":" + custMine.getId() + ",\"subject\":\"By admin\"}"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.subject").value("Fresh"))
+                .andExpect(jsonPath("$.subject").value("By admin"))
                 .andExpect(jsonPath("$.customerId").value(custMine.getId().intValue()));
     }
 
     @Test
-    void agent_cannotCreateTicket_forPeerCustomer() throws Exception {
+    void admin_postTicket_missingCustomerId_returnsBadRequest() throws Exception {
         mockMvc.perform(post("/api/v1/tickets")
+                        .header("Authorization", bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"Missing customer\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("BAD_REQUEST"));
+    }
+
+    @Test
+    void admin_postTicket_unknownCustomerId_returnsNotFound() throws Exception {
+        mockMvc.perform(post("/api/v1/tickets")
+                        .header("Authorization", bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":999999,\"subject\":\"Nobody\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("CUSTOMER_NOT_FOUND"));
+    }
+
+    @Test
+    void customer_withoutLinkedProfile_cannotCreateTicket() throws Exception {
+        mockMvc.perform(post("/api/v1/tickets")
+                        .header("Authorization", bearer(customerUserWithoutProfile))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"No profile\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void customer_updatesLinkedProfile() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custLinked.getId())
+                        .header("Authorization", bearer(endCustomer))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"Renamed\",\"phoneNumber\":\"555-0100\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Renamed"))
+                .andExpect(jsonPath("$.phoneNumber").value("555-0100"));
+    }
+
+    @Test
+    void customer_cannotPatchAnotherCustomersProfile() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custMine.getId())
+                        .header("Authorization", bearer(endCustomer))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"Hax\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void agent_patchesCustomerTheyCreated() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custMine.getId())
                         .header("Authorization", bearer(agent1))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"customerId\":" + custOther.getId() + ",\"subject\":\"Nope\"}"))
-                .andExpect(status().isForbidden());
+                        .content("{\"displayName\":\"Agent edit\",\"phoneNumber\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Agent edit"));
+    }
+
+    @Test
+    void agent_cannotPatchPeerAgentsCustomer() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custOther.getId())
+                        .header("Authorization", bearer(agent1))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"Nope\",\"phoneNumber\":null}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void admin_canModifyPeerAgentsCustomer_andCreateTicketForThem() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custOther.getId())
+                        .header("Authorization", bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"Admin cross-scope\",\"phoneNumber\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Admin cross-scope"));
+        mockMvc.perform(post("/api/v1/tickets")
+                        .header("Authorization", bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":" + custOther.getId() + ",\"subject\":\"Admin anywhere\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subject").value("Admin anywhere"))
+                .andExpect(jsonPath("$.customerId").value(custOther.getId().intValue()));
+    }
+
+    @Test
+    void admin_patchesCustomerProfile() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custMine.getId())
+                        .header("Authorization", bearer(admin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"Admin touched\",\"phoneNumber\":\"111\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.displayName").value("Admin touched"))
+                .andExpect(jsonPath("$.phoneNumber").value("111"));
+    }
+
+    @Test
+    void agent_linksCustomerLogin_viaPatch_orphanCanCreateTicket() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custMine.getId())
+                        .header("Authorization", bearer(agent1))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"Mine\",\"phoneNumber\":null,\"linkedCustomerUsername\":\"crm_orphan\"}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/tickets")
+                        .header("Authorization", bearer(customerUserWithoutProfile))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"After link\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.customerId").value(custMine.getId().intValue()));
+    }
+
+    @Test
+    void customerLogin_alreadyLinkedConflict() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custMine.getId())
+                        .header("Authorization", bearer(agent1))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"Mine\",\"phoneNumber\":null,\"linkedCustomerUsername\":\"crm_bob\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("CUSTOMER_LOGIN_ALREADY_LINKED"));
+    }
+
+    @Test
+    void customer_cannotSetLinkedCustomerUsernameOnSelfPatch() throws Exception {
+        mockMvc.perform(patch("/api/v1/customers/" + custLinked.getId())
+                        .header("Authorization", bearer(endCustomer))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"displayName\":\"Linked\",\"phoneNumber\":null,\"linkedCustomerUsername\":\"crm_orphan\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("FORBIDDEN"));
+    }
+
+    @Test
+    void agent_createsCustomer_withLinkedCustomerUsername_thenLoginCanOpenTickets() throws Exception {
+        User linkedLogin = userRepository.save(new User("linked_login_user", passwordEncoder.encode("secret"), UserRole.CUSTOMER));
+        mockMvc.perform(post("/api/v1/customers")
+                        .header("Authorization", bearer(agent1))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"email\":\"linked-provision@crm.test\",\"displayName\":\"Linked Co\",\"phoneNumber\":null,\"linkedCustomerUsername\":\"linked_login_user\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.email").value("linked-provision@crm.test"));
+        mockMvc.perform(post("/api/v1/tickets")
+                        .header("Authorization", bearer(linkedLogin))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"subject\":\"Provisioned\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.subject").value("Provisioned"));
     }
 
     @Test

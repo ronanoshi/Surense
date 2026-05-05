@@ -3,6 +3,8 @@ package com.surense.service.customers;
 import com.surense.api.customers.dto.CreateCustomerRequest;
 import com.surense.api.customers.dto.CustomerResponse;
 import com.surense.api.customers.dto.UpdateCustomerRequest;
+import com.surense.infra.error.ErrorCode;
+import com.surense.infra.error.exception.BadRequestException;
 import com.surense.infra.error.exception.ConflictException;
 import com.surense.infra.error.exception.ResourceNotFoundException;
 import com.surense.infra.persistence.auth.entity.User;
@@ -65,36 +67,67 @@ public class CustomerService {
         if (req.phoneNumber() != null && !req.phoneNumber().isBlank()) {
             c.setPhoneNumber(req.phoneNumber());
         }
+        if (req.linkedCustomerUsername() != null && !req.linkedCustomerUsername().isBlank()) {
+            linkCustomerLogin(c, req.linkedCustomerUsername().trim());
+        }
         return toResponse(customerRepository.save(c));
     }
 
     @Transactional
     public CustomerResponse updateCustomer(long id, UpdateCustomerRequest req) {
         UserPrincipal p = SecurityUtils.requireCurrentUser();
-        if (p.role() != UserRole.ADMIN && p.role() != UserRole.AGENT) {
-            throw new AccessDeniedException("Customers may not update customer records");
-        }
         Customer c = customerRepository.findById(id)
                 .orElseThrow(() -> ResourceNotFoundException.customer(id));
-        assertAgentOrAdminCanAccessCustomerForWrite(c, p);
+        if (p.role() == UserRole.ADMIN) {
+            applyCustomerPatch(c, req, p);
+            return toResponse(customerRepository.save(c));
+        }
+        if (p.role() == UserRole.AGENT) {
+            if (!c.getCreatedByAgent().getId().equals(p.id())) {
+                throw new AccessDeniedException("Not allowed to modify this customer");
+            }
+            applyCustomerPatch(c, req, p);
+            return toResponse(customerRepository.save(c));
+        }
+        if (p.role() == UserRole.CUSTOMER) {
+            if (c.getLinkedUser() == null || !c.getLinkedUser().getId().equals(p.id())) {
+                throw new AccessDeniedException("Customer profile not accessible");
+            }
+            applyCustomerPatch(c, req, p);
+            return toResponse(customerRepository.save(c));
+        }
+        throw new AccessDeniedException("Not allowed to update customer records");
+    }
+
+    /**
+     * Links {@code c} to an existing {@link UserRole#CUSTOMER} login ({@code users.username}).
+     * Idempotent if {@code c} is already linked to the same user.
+     */
+    private void linkCustomerLogin(Customer c, String username) {
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new BadRequestException(ErrorCode.CUSTOMER_LOGIN_NOT_FOUND));
+        if (user.getRole() != UserRole.CUSTOMER) {
+            throw new BadRequestException(ErrorCode.CUSTOMER_LOGIN_WRONG_ROLE);
+        }
+        customerRepository.findByLinkedUserId(user.getId()).ifPresent(other -> {
+            if (!other.getId().equals(c.getId())) {
+                throw ConflictException.customerLoginAlreadyLinked();
+            }
+        });
+        c.setLinkedUser(user);
+    }
+
+    private void applyCustomerPatch(Customer c, UpdateCustomerRequest req, UserPrincipal actor) {
         c.setDisplayName(req.displayName());
         if (req.phoneNumber() != null) {
             c.setPhoneNumber(req.phoneNumber().isBlank() ? null : req.phoneNumber());
         }
-        return toResponse(customerRepository.save(c));
-    }
-
-    /**
-     * Agents may modify customers they created; admins may modify any.
-     */
-    private void assertAgentOrAdminCanAccessCustomerForWrite(Customer c, UserPrincipal p) {
-        if (p.role() == UserRole.ADMIN) {
-            return;
+        if (req.linkedCustomerUsername() != null && !req.linkedCustomerUsername().isBlank()) {
+            if (actor.role() == UserRole.CUSTOMER) {
+                throw new AccessDeniedException("Cannot change linked customer login on self-service update");
+            }
+            linkCustomerLogin(c, req.linkedCustomerUsername().trim());
         }
-        if (p.role() == UserRole.AGENT && c.getCreatedByAgent().getId().equals(p.id())) {
-            return;
-        }
-        throw new AccessDeniedException("Not allowed to modify this customer");
     }
 
     private void assertCanReadCustomer(Customer c) {
