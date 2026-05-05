@@ -21,7 +21,7 @@
     <springProfile name="dev | default | test">
         <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
             <encoder class="ch.qos.logback.core.encoder.LayoutWrappingEncoder">
-                <layout class="com.surense.common.logging.MaskingPatternLayout">
+                <layout class="com.surense.infra.logging.MaskingPatternLayout">
                     <pattern>${LOG_PATTERN_DEV}</pattern>
                 </layout>
                 <charset>UTF-8</charset>
@@ -31,7 +31,7 @@
 
     <springProfile name="prod">
         <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder class="com.surense.common.logging.MaskingLogstashEncoder">
+            <encoder class="com.surense.infra.logging.MaskingLogstashEncoder">
                 <includeMdcKeyName>correlationId</includeMdcKeyName>
                 <includeMdcKeyName>userId</includeMdcKeyName>
                 <includeMdcKeyName>userRole</includeMdcKeyName>

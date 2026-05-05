@@ -186,7 +186,8 @@ In Cursor (with the **Extension Pack for Java** installed):
 1. Open the Run & Debug panel (`Ctrl+Shift+D`).
 2. Click "Run and Debug" → choose **Attach to Java Process** → host `localhost`,
    port `5005`. Cursor will create a `.vscode/launch.json` entry the first time.
-3. Drop a breakpoint in any `.java` file (e.g. `BoomController.java`) and
+3. Drop a breakpoint in any `.java` file (e.g.
+   `api/dev/BoomController.java`) and
    `curl` the endpoint that hits it — execution pauses on the breakpoint.
 
 `suspend=n` means the app starts immediately without waiting for the
@@ -200,45 +201,26 @@ will block until the debugger attaches.
 ```
 com.surense
 ├── CustomerSupportHubApplication.java
-├── auth/                           ← Step 5: users + refresh tokens (Step 6: JWT API)
-│   ├── entity/                   ← User, RefreshToken, UserRole
-│   └── repository/
-├── customers/                    ← Step 5: customer records (Step 7+: REST)
-│   ├── entity/
-│   └── repository/
-├── tickets/                      ← Step 5: support tickets (Step 7+: REST)
-│   ├── entity/
-│   └── repository/
-├── _dev/                           ← TEMPORARY dev-only code (removed Step 7+)
-│   └── BoomController              ← exercises every error branch
-└── common/                         ← cross-cutting concerns
+├── api/                            ← HTTP layer: REST controllers & API models (Step 6+)
+│   └── dev/                        ← TEMPORARY — BoomController only (removed Step 7+)
+├── service/                        ← application services / use-cases (Step 6+)
+│   └── package-info.java
+└── infra/                          ← infrastructure: persistence, config, cross-cutting
     ├── config/
-    │   └── SecurityConfig          ← permissive (replaced Step 6)
+    │   └── SecurityConfig          ← permissive until Step 6
     ├── error/
-    │   ├── ErrorCode               ← enum: HTTP status + message key
-    │   ├── ErrorResponse           ← unified JSON shape
-    │   ├── ErrorResponseFactory    ← shared 429 + advice body builder
-    │   ├── GlobalExceptionHandler  ← @RestControllerAdvice
-    │   └── exception/
-    │       ├── ApiException        ← base
-    │       ├── ResourceNotFoundException
-    │       ├── ConflictException
-    │       ├── BadRequestException
-    │       ├── NotImplementedException
-    │       └── RateLimitedException  ← 429 + Retry-After (Step 6 in-controller)
+    │   ├── ErrorCode
+    │   ├── ErrorResponse
+    │   ├── ErrorResponseFactory
+    │   ├── GlobalExceptionHandler
+    │   └── exception/              ← ApiException hierarchy, RateLimitedException, …
     ├── i18n/
-    │   └── MessageResolver         ← MessageSource facade
     ├── logging/
-    │   ├── CorrelationIdConstants
-    │   ├── CorrelationIdFilter     ← first in servlet filter chain
-    │   ├── LogMasker               ← PII regex rules
-    │   ├── MaskingPatternLayout    ← dev/text encoder
-    │   └── MaskingLogstashEncoder  ← prod/JSON encoder
-    └── ratelimit/                  ← Step 4b: in-process token buckets
-        ├── IpRateLimitFilter       ← before Spring Security (per-IP)
-        ├── UserRateLimitFilter     ← after Spring Security (per-userId)
-        ├── LoginRateLimiter        ← Step 6: failed logins only
-        └── RefreshTokenRateLimiter ← Step 6: per hashed refresh token
+    ├── ratelimit/                  ← Step 4b token buckets + servlet filters
+    └── persistence/                ← JPA entities & Spring Data (Step 5)
+        ├── auth/                   ← entity/, repository/ — users, refresh tokens
+        ├── customers/
+        └── tickets/
 ```
 
 ### Database schema (Step 5)
@@ -323,7 +305,7 @@ Two output formats, selected by Spring profile:
 **Dev text format** (one line):
 
 ```
-2026-05-04 10:38:21.123  INFO http-nio-8080-1 [corr=8c9b7a6e,user=42,role=AGENT] c.c.c.t.TicketController : request.end status=200
+2026-05-04 10:38:21.123  INFO http-nio-8080-1 [corr=8c9b7a6e,user=42,role=AGENT] c.s.api.v1.TicketController : request.end status=200
 ```
 
 **Prod JSON shape**:
@@ -333,7 +315,7 @@ Two output formats, selected by Spring profile:
   "timestamp": "2026-05-04T08:38:21.123Z",
   "level": "INFO",
   "thread": "http-nio-8080-exec-3",
-  "logger": "com.surense.tickets.TicketController",
+  "logger": "com.surense.api.v1.TicketController",
   "service": "customer-support-hub",
   "correlationId": "8c9b7a6e-1234-4567-89ab-cdef01234567",
   "userId": "42",
