@@ -5,8 +5,9 @@ A backend service for a small CRM-style customer-support system. Three roles
 rotation, and a clean role-aware REST API.
 
 This is a home-assignment project. The README is grown step by step alongside
-the codebase; this version reflects the work completed through **Step 4b —
-Rate limiting (Bucket4j + Caffeine + two-filter pipeline)**.
+the codebase; this version reflects the work completed through **Step 5 — DB
+schema, Flyway migrations, and JPA domain skeleton** (plus a local-only seeded
+`admin` user in `V3`).
 
 ---
 
@@ -199,6 +200,15 @@ will block until the debugger attaches.
 ```
 com.surense
 ├── CustomerSupportHubApplication.java
+├── auth/                           ← Step 5: users + refresh tokens (Step 6: JWT API)
+│   ├── entity/                   ← User, RefreshToken, UserRole
+│   └── repository/
+├── customers/                    ← Step 5: customer records (Step 7+: REST)
+│   ├── entity/
+│   └── repository/
+├── tickets/                      ← Step 5: support tickets (Step 7+: REST)
+│   ├── entity/
+│   └── repository/
 ├── _dev/                           ← TEMPORARY dev-only code (removed Step 7+)
 │   └── BoomController              ← exercises every error branch
 └── common/                         ← cross-cutting concerns
@@ -207,6 +217,7 @@ com.surense
     ├── error/
     │   ├── ErrorCode               ← enum: HTTP status + message key
     │   ├── ErrorResponse           ← unified JSON shape
+    │   ├── ErrorResponseFactory    ← shared 429 + advice body builder
     │   ├── GlobalExceptionHandler  ← @RestControllerAdvice
     │   └── exception/
     │       ├── ApiException        ← base
@@ -230,8 +241,21 @@ com.surense
         └── RefreshTokenRateLimiter ← Step 6: per hashed refresh token
 ```
 
-Real business features (`auth/`, `users/`, `customers/`, `tickets/`) join from
-**Step 5** onwards.
+### Database schema (Step 5)
+
+[Flyway](https://flywaydb.org/) scripts are under `src/main/resources/db/migration/`:
+
+| Version | What it does |
+| ------- | -------------- |
+| `V1` | `users`, `refresh_tokens` — auth persistence (Step 6 wires JWT + refresh rotation) |
+| `V2` | `customers`, `tickets` — CRM core (role-aware APIs in Step 7+) |
+| `V3` | Idempotent seed: **`admin`** / **`ADMIN`** row for local docker MySQL only |
+
+**Seeded dev admin (`V3`):** plain-text password **`AdminChangeMe1!`** (BCrypt-stored in the migration file). Intended only for **local** `docker compose` MySQL — rotate before any shared or non-local deployment. If username `admin` already exists, `ON DUPLICATE KEY UPDATE` leaves it untouched.
+
+The **`test` profile** disables Flyway and builds an H2 schema via Hibernate — **`V3` never runs in automated tests**, so suites stay deterministic without relying on SQL seed data.
+
+Real REST controllers (`/api/v1/...`) arrive from **Step 6** (auth) and **Step 7+** (customers, tickets).
 
 ### Error handling
 
@@ -427,8 +451,8 @@ mapping (e.g. `SPRING_DATASOURCE_PASSWORD`). Application-specific flags:
 | `surense.rate-limit.login.{capacity,refill}` | `5` + `PT15M` | Failed-login budget (Step 6) |
 | `surense.rate-limit.refresh.{capacity,refill}` | `10` + `PT1M` | Refresh budget per hashed token (Step 6) |
 
-Further auth-related settings (JWT secret, ADMIN seed credentials) land in
-Step 6.
+Further auth-related settings (JWT signing key, token TTLs, etc.) land in **Step 6**.
+The baseline **`admin`** user credentials come from Flyway **`V3`** (see [Database schema](#database-schema-step-5)); replace them via SQL or a password-change API once Step 6 ships.
 
 ## Localization
 
@@ -468,7 +492,7 @@ the raw message key) if a locale or key is missing.
 | 3    | Project skeleton & infrastructure-up             | ✅ complete  |
 | 4a   | Errors + i18n + correlation-id logs + PII masking | ✅ complete |
 | 4b   | Rate limiting                                    | ✅ complete  |
-| 5    | DB schema & domain skeleton                      | ⏳ planned   |
+| 5    | DB schema & domain skeleton                      | ✅ complete  |
 | 6    | Auth: login / refresh / logout                   | ⏳ planned   |
 | 7+   | Features (customers, tickets, …)                 | ⏳ planned   |
 
