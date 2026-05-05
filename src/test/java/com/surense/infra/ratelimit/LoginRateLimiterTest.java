@@ -48,24 +48,24 @@ class LoginRateLimiterTest {
 
     @Test
     void recordsFailedAttemptsUntilCapacity() {
-        Assertions.assertThat(limiter.recordFailedAttempt("alice", "1.2.3.4")).isTrue();
-        Assertions.assertThat(limiter.recordFailedAttempt("alice", "1.2.3.4")).isTrue();
-        Assertions.assertThat(limiter.recordFailedAttempt("alice", "1.2.3.4")).isFalse();
+        Assertions.assertThat(limiter.recordFailedLogin("alice", "1.2.3.4")).isEmpty();
+        Assertions.assertThat(limiter.recordFailedLogin("alice", "1.2.3.4")).isEmpty();
+        Assertions.assertThat(limiter.recordFailedLogin("alice", "1.2.3.4")).isPresent();
     }
 
     @Test
     void differentClientIpUsesSeparateBucket() {
-        Assertions.assertThat(limiter.recordFailedAttempt("alice", "1.2.3.4")).isTrue();
-        Assertions.assertThat(limiter.recordFailedAttempt("alice", "1.2.3.4")).isTrue();
-        Assertions.assertThat(limiter.recordFailedAttempt("alice", "1.2.3.4")).isFalse();
+        Assertions.assertThat(limiter.recordFailedLogin("alice", "1.2.3.4")).isEmpty();
+        Assertions.assertThat(limiter.recordFailedLogin("alice", "1.2.3.4")).isEmpty();
+        Assertions.assertThat(limiter.recordFailedLogin("alice", "1.2.3.4")).isPresent();
 
-        Assertions.assertThat(limiter.recordFailedAttempt("alice", "9.9.9.9")).isTrue();
+        Assertions.assertThat(limiter.recordFailedLogin("alice", "9.9.9.9")).isEmpty();
     }
 
     @Test
     void usernameIsCaseFoldedForKeying() {
-        Assertions.assertThat(limiter.recordFailedAttempt("Alice", "1.2.3.4")).isTrue();
-        Assertions.assertThat(limiter.recordFailedAttempt("alice", "1.2.3.4")).isTrue();
-        Assertions.assertThat(limiter.recordFailedAttempt("ALICE", "1.2.3.4")).isFalse();
+        Assertions.assertThat(limiter.recordFailedLogin("Alice", "1.2.3.4")).isEmpty();
+        Assertions.assertThat(limiter.recordFailedLogin("alice", "1.2.3.4")).isEmpty();
+        Assertions.assertThat(limiter.recordFailedLogin("ALICE", "1.2.3.4")).isPresent();
     }
 }

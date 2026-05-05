@@ -26,3 +26,8 @@ logging:
 surense:
   rate-limit:
     enabled: false
+  auth:
+    jwt-secret: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    issuer: surense-test
+    access-token-ttl: PT15M
+    refresh-token-ttl: P7D

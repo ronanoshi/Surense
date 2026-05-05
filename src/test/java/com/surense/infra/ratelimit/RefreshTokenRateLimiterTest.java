@@ -48,17 +48,17 @@ class RefreshTokenRateLimiterTest {
 
     @Test
     void sameTokenSharesBucket() {
-        Assertions.assertThat(limiter.tryConsume("opaque-refresh-token-1")).isTrue();
-        Assertions.assertThat(limiter.tryConsume("opaque-refresh-token-1")).isTrue();
-        Assertions.assertThat(limiter.tryConsume("opaque-refresh-token-1")).isFalse();
+        Assertions.assertThat(limiter.tryConsumeRefresh("opaque-refresh-token-1")).isEmpty();
+        Assertions.assertThat(limiter.tryConsumeRefresh("opaque-refresh-token-1")).isEmpty();
+        Assertions.assertThat(limiter.tryConsumeRefresh("opaque-refresh-token-1")).isPresent();
     }
 
     @Test
     void differentTokensAreIndependent() {
-        Assertions.assertThat(limiter.tryConsume("token-a")).isTrue();
-        Assertions.assertThat(limiter.tryConsume("token-a")).isTrue();
-        Assertions.assertThat(limiter.tryConsume("token-a")).isFalse();
+        Assertions.assertThat(limiter.tryConsumeRefresh("token-a")).isEmpty();
+        Assertions.assertThat(limiter.tryConsumeRefresh("token-a")).isEmpty();
+        Assertions.assertThat(limiter.tryConsumeRefresh("token-a")).isPresent();
 
-        Assertions.assertThat(limiter.tryConsume("token-b")).isTrue();
+        Assertions.assertThat(limiter.tryConsumeRefresh("token-b")).isEmpty();
     }
 }

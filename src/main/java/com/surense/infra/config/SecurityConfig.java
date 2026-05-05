@@ -4,37 +4,33 @@ import com.surense.infra.ratelimit.BucketProvider;
 import com.surense.infra.ratelimit.RateLimitProperties;
 import com.surense.infra.ratelimit.RateLimitResponseWriter;
 import com.surense.infra.ratelimit.UserRateLimitFilter;
+import com.surense.infra.security.ApiAuthenticationEntryPoint;
+import com.surense.infra.security.JwtAuthenticationFilter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
 
 /**
- * Permissive security configuration for the cross-cutting infrastructure phase.
- *
- * <p>This config deliberately allows all requests so the global error pipeline,
- * correlation-id filter, and the dev-only {@code BoomController} can be exercised
- * without authentication. It is REPLACED in Step 6 with the real JWT-based
- * filter chain.
- *
- * <p>It also disables CSRF (we are a stateless REST API), the auto-generated
- * HTTP Basic prompt and the form-login page (so the boot log no longer prints
- * a generated security password).
- *
- * <p>Step 4b wires {@link UserRateLimitFilter} <em>after</em>
- * {@link AnonymousAuthenticationFilter} so {@code SecurityContextHolder}
- * reflects the final authentication before per-userId limiting runs. The
- * companion {@link com.surense.infra.ratelimit.IpRateLimitFilter} is a servlet
- * filter ordered before this chain — together they implement the two-filter
- * Option B design (see README).
+ * Stateless JWT security for {@code /api/v1/**}; public auth endpoints under
+ * {@code /api/v1/auth/**}. Rate limiting stays Option B: servlet IP filter
+ * (registered elsewhere), {@link UserRateLimitFilter} after the anonymous
+ * identity is finalized.
  */
 @Configuration
 public class SecurityConfig {
+
+    @Bean
+    PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
 
     @Bean
     UserRateLimitFilter userRateLimitFilter(RateLimitProperties props,
@@ -44,25 +40,35 @@ public class SecurityConfig {
     }
 
     @Bean
-    SecurityFilterChain filterChain(HttpSecurity http, UserRateLimitFilter userRateLimitFilter) throws Exception {
+    SecurityFilterChain filterChain(HttpSecurity http,
+                                    JwtAuthenticationFilter jwtAuthenticationFilter,
+                                    UserRateLimitFilter userRateLimitFilter,
+                                    ApiAuthenticationEntryPoint authenticationEntryPoint) throws Exception {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/actuator/**").permitAll()
+                        .requestMatchers("/api/v1/auth/**").permitAll()
+                        .requestMatchers("/__test__/boom", "/__test__/boom/**").permitAll()
+                        .requestMatchers("/api/v1/**").authenticated()
+                        .anyRequest().permitAll())
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .formLogin(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable)
+                .exceptionHandling(e -> e.authenticationEntryPoint(authenticationEntryPoint))
+                .addFilterBefore(jwtAuthenticationFilter, AnonymousAuthenticationFilter.class)
                 .addFilterAfter(userRateLimitFilter, AnonymousAuthenticationFilter.class)
                 .build();
     }
 
     /**
-     * Empty user store, declared solely to prevent {@code UserDetailsServiceAutoConfiguration}
-     * from creating an auto-generated user (which logs a "Using generated security password"
-     * warning on every boot). Replaced in Step 6 with the real JPA-backed implementation.
+     * Suppresses Boot's generated default user; JWT replaces form login — this bean is never used.
      */
     @Bean
-    UserDetailsService emptyUserDetailsService() {
-        return new InMemoryUserDetailsManager();
+    UserDetailsService noopUserDetailsService() {
+        return username -> {
+            throw new UsernameNotFoundException(username);
+        };
     }
 }

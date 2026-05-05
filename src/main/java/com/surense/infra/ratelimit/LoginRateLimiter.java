@@ -1,12 +1,16 @@
 package com.surense.infra.ratelimit;
 
+import io.github.bucket4j.Bucket;
+import io.github.bucket4j.ConsumptionProbe;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
+
+import java.util.Optional;
 
 /**
  * Per-(username + client IP) limiter for failed login attempts only.
  *
- * <p>Step 6's {@code AuthService} calls {@link #recordFailedAttempt(String, String)}
+ * <p>{@link com.surense.service.auth.AuthService} calls {@link #recordFailedLogin(String, String)}
  * <strong>only after</strong> credentials have been rejected — successful logins
  * never consume tokens, which is deliberate (defensible in an interview as
  * "we throttle attackers, not users who typo once").
@@ -21,13 +25,17 @@ public class LoginRateLimiter {
      * Records one failed login against the shared bucket for
      * {@code username + clientIp}.
      *
-     * @return {@code true} if the failure is accepted under the limit,
-     *         {@code false} if the caller must abort with HTTP 429 before doing
-     *         further work (avoid distinguishing "bad password" from "rate
-     *         limited" in timing if you choose uniform responses in Step 6).
+     * @return empty if the failure was recorded; if non-empty, the client is
+     *         over the limit and the value is {@code Retry-After} seconds
      */
-    public boolean recordFailedAttempt(String username, String clientIp) {
+    public Optional<Long> recordFailedLogin(String username, String clientIp) {
         RateLimitKey key = RateLimitKey.login(username, clientIp);
-        return bucketProvider.resolve(key).tryConsume(1L);
+        Bucket bucket = bucketProvider.resolve(key);
+        ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1L);
+        if (probe.isConsumed()) {
+            return Optional.empty();
+        }
+        return Optional.of(
+                RateLimitRetryAfter.toSeconds(probe.getNanosToWaitForRefill()));
     }
 }

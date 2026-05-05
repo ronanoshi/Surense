@@ -1,12 +1,13 @@
 package com.surense.infra.ratelimit;
 
+import com.surense.infra.security.TokenHasher;
+
+import io.github.bucket4j.Bucket;
+import io.github.bucket4j.ConsumptionProbe;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.HexFormat;
+import java.util.Optional;
 
 /**
  * Per-refresh-token limiter (Step 6). Keys buckets on a SHA-256 hash of the
@@ -21,21 +22,16 @@ public class RefreshTokenRateLimiter {
     /**
      * Consumes one token from the refresh bucket for the given opaque token.
      *
-     * @return {@code true} if under the limit, {@code false} if the caller
-     *         must respond with 429.
+     * @return empty if allowed; if present, rate limited — value is
+     *         {@code Retry-After} seconds
      */
-    public boolean tryConsume(String refreshToken) {
-        String hash = sha256Hex(refreshToken);
-        return bucketProvider.resolve(RateLimitKey.refresh(hash)).tryConsume(1L);
-    }
-
-    private static String sha256Hex(String value) {
-        try {
-            MessageDigest md = MessageDigest.getInstance("SHA-256");
-            byte[] digest = md.digest(value.getBytes(StandardCharsets.UTF_8));
-            return HexFormat.of().formatHex(digest);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 not available", e);
+    public Optional<Long> tryConsumeRefresh(String refreshToken) {
+        String hash = TokenHasher.sha256Hex(refreshToken);
+        Bucket bucket = bucketProvider.resolve(RateLimitKey.refresh(hash));
+        ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1L);
+        if (probe.isConsumed()) {
+            return Optional.empty();
         }
+        return Optional.of(RateLimitRetryAfter.toSeconds(probe.getNanosToWaitForRefill()));
     }
 }

@@ -83,3 +83,10 @@ surense:
     refresh:
       capacity: 10
       refill: PT1M       # 10 refresh calls / minute
+
+  # JWT access tokens + opaque refresh persistence (Step 6).
+  auth:
+    jwt-secret: ${SURENSE_JWT_SECRET:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+    issuer: surense
+    access-token-ttl: PT15M
+    refresh-token-ttl: P7D

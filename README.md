@@ -5,9 +5,10 @@ A backend service for a small CRM-style customer-support system. Three roles
 rotation, and a clean role-aware REST API.
 
 This is a home-assignment project. The README is grown step by step alongside
-the codebase; this version reflects the work completed through **Step 5 — DB
-schema, Flyway migrations, and JPA domain skeleton** (plus a local-only seeded
-`admin` user in `V3`).
+the codebase; this version reflects the work completed through **Step 6 —
+JWT authentication** (`POST /api/v1/auth/login|refresh|logout`), opaque
+refresh-token persistence with rotation / reuse detection, and login /
+refresh rate limiting wired to Bucket4j.
 
 ---
 
@@ -21,7 +22,7 @@ schema, Flyway migrations, and JPA domain skeleton** (plus a local-only seeded
 - **JUnit 5**, **Mockito**, **Spring Security Test** for tests
 - **H2** in-memory (test scope only) for fast context-load tests
 - **Lombok** for boilerplate reduction
-- **Logback** + **logstash-logback-encoder** for structured logging (JSON in prod)
+- **JJWT 0.12** — HS256 access JWTs (runtime-only jjwt-impl + jjwt-jackson)
 
 ## Prerequisites
 
@@ -201,13 +202,17 @@ will block until the debugger attaches.
 ```
 com.surense
 ├── CustomerSupportHubApplication.java
-├── api/                            ← HTTP layer: REST controllers & API models (Step 6+)
+├── api/                            ← HTTP layer: REST controllers & API models
+│   ├── auth/                       ← Step 6: AuthController + request DTOs
+│   │   └── dto/
 │   └── dev/                        ← TEMPORARY — BoomController only (removed Step 7+)
-├── service/                        ← application services / use-cases (Step 6+)
+├── service/
+│   ├── auth/                       ← Step 6: AuthService (JWT + opaque refresh rotation)
 │   └── package-info.java
-└── infra/                          ← infrastructure: persistence, config, cross-cutting
+└── infra/
     ├── config/
-    │   └── SecurityConfig          ← permissive until Step 6
+    │   └── SecurityConfig          ← Step 6: stateless JWT chain + rate-limit filter order
+    ├── security/                   ← Step 6: JwtTokenService, JwtAuthenticationFilter, 401 JSON entry point
     ├── error/
     │   ├── ErrorCode
     │   ├── ErrorResponse
@@ -237,7 +242,7 @@ com.surense
 
 The **`test` profile** disables Flyway and builds an H2 schema via Hibernate — **`V3` never runs in automated tests**, so suites stay deterministic without relying on SQL seed data.
 
-Real REST controllers (`/api/v1/...`) arrive from **Step 6** (auth) and **Step 7+** (customers, tickets).
+Real REST controllers for CRM resources (`/api/v1/customers`, …) arrive from **Step 7+**.
 
 ### Error handling
 
@@ -398,8 +403,144 @@ this edge (e.g. validate the bearer early or re-apply IP limits for anonymous
 | Method & Path             | Status | Notes                                   |
 | ------------------------- | :----: | --------------------------------------- |
 | `GET /actuator/health`    | 200    | Spring Boot health probe                |
+| `POST /api/v1/auth/login` | 200 / 401 / 429 | JSON `{ username, password }` → access + refresh tokens |
+| `POST /api/v1/auth/refresh` | 200 / 401 / 429 | JSON `{ refreshToken }` → rotates refresh row, new tokens |
+| `POST /api/v1/auth/logout` | 204 / 401 | JSON `{ refreshToken }` → deletes refresh row (session ends) |
 | `GET /__test__/boom`      | varies | **dev-only**, exercises error pipeline  |
 | `POST /__test__/boom/validate` | varies | **dev-only**, demos validation/malformed |
+
+### Auth: example requests
+
+Assuming the app listens on **`http://localhost:8080`** and Flyway **`V3`** has seeded user **`admin`** / **`AdminChangeMe1!`** (local docker MySQL only).
+
+#### Login
+
+Returns JSON with `accessToken`, `refreshToken`, `tokenType`, `expiresInSeconds`.
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/v1/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"AdminChangeMe1!"}'
+```
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/login" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body '{"username":"admin","password":"AdminChangeMe1!"}'
+```
+
+PowerShell often **truncates** long strings when it prints objects as a **table**. To print the **full** access and refresh tokens after login:
+
+```powershell
+$r = Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/login" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body '{"username":"admin","password":"AdminChangeMe1!"}'
+
+$r.accessToken    # full JWT, one line
+$r.refreshToken   # full opaque refresh token
+$r | ConvertTo-Json -Depth 5   # entire response as JSON (copy/paste friendly)
+```
+
+Same flow with **`Invoke-WebRequest`** (parse the body yourself):
+
+```powershell
+$res = Invoke-WebRequest -Uri "http://localhost:8080/api/v1/auth/login" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body '{"username":"admin","password":"AdminChangeMe1!"}'
+
+$j = $res.Content | ConvertFrom-Json
+$j.accessToken
+$j.refreshToken
+```
+
+#### Refresh (renew)
+
+Exchange the **opaque** `refreshToken` from login for new tokens (server rotates the refresh row). No `Authorization` header.
+
+You must send a real **JSON** body. A hashtable alone (`-Body @{ ... }`) without **`ConvertTo-Json`** is not JSON and usually yields **400 Bad Request**.
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/v1/auth/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken":"PASTE_OPAQUE_REFRESH_TOKEN_HERE"}'
+```
+
+```powershell
+# JSON string body (simplest)
+Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/refresh" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body '{"refreshToken":"PASTE_OPAQUE_REFRESH_TOKEN_HERE"}'
+```
+
+```powershell
+# Hashtable → JSON (note ConvertTo-Json)
+Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/refresh" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body (@{ refreshToken = "PASTE_OPAQUE_REFRESH_TOKEN_HERE" } | ConvertTo-Json)
+```
+
+Login → refresh in one script, then print the **full new** access token:
+
+```powershell
+$resp = Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/login" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body '{"username":"admin","password":"AdminChangeMe1!"}'
+
+$new = Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/refresh" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body (@{ refreshToken = $resp.refreshToken } | ConvertTo-Json)
+
+$new.accessToken      # full new JWT
+$new.refreshToken     # full new opaque refresh token
+$new | ConvertTo-Json -Depth 5
+```
+
+#### Logout
+
+Ends that refresh session (row deleted). Response is **HTTP 204** with no body — `Invoke-RestMethod` may return `$null`.
+
+```bash
+curl -sS -X POST "http://localhost:8080/api/v1/auth/logout" \
+  -H "Content-Type: application/json" \
+  -d '{"refreshToken":"PASTE_OPAQUE_REFRESH_TOKEN_HERE"}'
+```
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/logout" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body '{"refreshToken":"PASTE_OPAQUE_REFRESH_TOKEN_HERE"}'
+```
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/logout" `
+  -Method POST `
+  -ContentType "application/json; charset=utf-8" `
+  -Body (@{ refreshToken = "PASTE_OPAQUE_REFRESH_TOKEN_HERE" } | ConvertTo-Json)
+```
+
+#### Calling a protected route (Step 7+)
+
+Send the access JWT:
+
+```bash
+curl -sS "http://localhost:8080/api/v1/some-protected-resource" \
+  -H "Authorization: Bearer PASTE_ACCESS_JWT_HERE"
+```
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8080/api/v1/some-protected-resource" `
+  -Headers @{ Authorization = "Bearer PASTE_ACCESS_JWT_HERE" }
+```
+
+**PowerShell:** use **`curl.exe`** for Unix-style `curl` flags (`-sS`, `-X`, `-d`). Plain **`curl`** is an alias for **`Invoke-WebRequest`**, which uses **`-Method`** instead of **`-X`** and different body rules.
 
 The `/__test__/boom` endpoint is **temporary** and gated by
 `surense.dev.boom-endpoint.enabled=true` (set only in dev profile). It will be
@@ -431,10 +572,13 @@ mapping (e.g. `SPRING_DATASOURCE_PASSWORD`). Application-specific flags:
 | `surense.rate-limit.unauth-ip.{capacity,refill}` | `30` + `PT1M` | Anonymous per-IP budget |
 | `surense.rate-limit.auth-user.{capacity,refill}` | `60` + `PT1M` | Authenticated per-userId budget |
 | `surense.rate-limit.login.{capacity,refill}` | `5` + `PT15M` | Failed-login budget (Step 6) |
-| `surense.rate-limit.refresh.{capacity,refill}` | `10` + `PT1M` | Refresh budget per hashed token (Step 6) |
+| `surense.rate-limit.refresh.{capacity,refill}` | `10` + `PT1M` | Refresh budget per hashed opaque refresh token |
+| `surense.auth.jwt-secret` | 256-bit hex default in YAML | HS256 signing key; override with `SURENSE_JWT_SECRET` in real deployments |
+| `surense.auth.issuer` | `surense` | JWT `iss` claim |
+| `surense.auth.access-token-ttl` | `PT15M` | Access JWT lifetime |
+| `surense.auth.refresh-token-ttl` | `P7D` | Opaque refresh token persistence lifetime |
 
-Further auth-related settings (JWT signing key, token TTLs, etc.) land in **Step 6**.
-The baseline **`admin`** user credentials come from Flyway **`V3`** (see [Database schema](#database-schema-step-5)); replace them via SQL or a password-change API once Step 6 ships.
+The baseline **`admin`** user credentials come from Flyway **`V3`** (see [Database schema](#database-schema-step-5)); log in via **`POST /api/v1/auth/login`** against docker MySQL.
 
 ## Localization
 
@@ -475,7 +619,7 @@ the raw message key) if a locale or key is missing.
 | 4a   | Errors + i18n + correlation-id logs + PII masking | ✅ complete |
 | 4b   | Rate limiting                                    | ✅ complete  |
 | 5    | DB schema & domain skeleton                      | ✅ complete  |
-| 6    | Auth: login / refresh / logout                   | ⏳ planned   |
+| 6    | Auth: login / refresh / logout                   | ✅ complete  |
 | 7+   | Features (customers, tickets, …)                 | ⏳ planned   |
 
 ## License
