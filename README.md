@@ -5,8 +5,9 @@ A backend service for a small CRM-style customer-support system. Three roles
 rotation, and a clean role-aware REST API.
 
 This is a home-assignment project. The README is grown step by step alongside
-the codebase; this version reflects the work completed through **Step 6 —
-JWT authentication** (`POST /api/v1/auth/login|refresh|logout`), opaque
+the codebase; this version reflects the work completed through **Step 7 —
+role-aware CRM APIs** (`/api/v1/customers`, `/api/v1/tickets`) on top of
+**Step 6 — JWT authentication** (`POST /api/v1/auth/login|refresh|logout`), opaque
 refresh-token persistence with rotation / reuse detection, and login /
 refresh rate limiting wired to Bucket4j.
 
@@ -205,13 +206,19 @@ com.surense
 ├── api/                            ← HTTP layer: REST controllers & API models
 │   ├── auth/                       ← Step 6: AuthController + request DTOs
 │   │   └── dto/
-│   └── dev/                        ← TEMPORARY — BoomController only (removed Step 7+)
+│   ├── customers/                  ← Step 7: CustomerController + DTOs
+│   │   └── dto/
+│   ├── tickets/                    ← Step 7: TicketController + DTOs
+│   │   └── dto/
+│   └── dev/                        ← TEMPORARY — BoomController only (dev profile)
 ├── service/
 │   ├── auth/                       ← Step 6: AuthService (JWT + opaque refresh rotation)
+│   ├── customers/                  ← Step 7: CustomerService
+│   ├── tickets/                    ← Step 7: TicketService
 │   └── package-info.java
 └── infra/
     ├── config/
-    │   └── SecurityConfig          ← Step 6: stateless JWT chain + rate-limit filter order
+    │   └── SecurityConfig          ← Step 6–7: stateless JWT + `@EnableMethodSecurity` + rate-limit filter order
     ├── security/                   ← Step 6: JwtTokenService, JwtAuthenticationFilter, 401 JSON entry point
     ├── error/
     │   ├── ErrorCode
@@ -224,8 +231,8 @@ com.surense
     ├── ratelimit/                  ← Step 4b token buckets + servlet filters
     └── persistence/                ← JPA entities & Spring Data (Step 5)
         ├── auth/                   ← entity/, repository/ — users, refresh tokens
-        ├── customers/
-        └── tickets/
+        ├── customers/              ← Step 7: role-scoped customer rows + agent creator
+        └── tickets/                ← Step 7: tickets linked to customers + optional assignee
 ```
 
 ### Database schema (Step 5)
@@ -235,14 +242,14 @@ com.surense
 | Version | What it does |
 | ------- | -------------- |
 | `V1` | `users`, `refresh_tokens` — auth persistence (Step 6 wires JWT + refresh rotation) |
-| `V2` | `customers`, `tickets` — CRM core (role-aware APIs in Step 7+) |
+| `V2` | `customers`, `tickets` — CRM core (**Step 7** exposes role-aware REST APIs) |
 | `V3` | Idempotent seed: **`admin`** / **`ADMIN`** row for local docker MySQL only |
 
 **Seeded dev admin (`V3`):** plain-text password **`AdminChangeMe1!`** (BCrypt-stored in the migration file). Intended only for **local** `docker compose` MySQL — rotate before any shared or non-local deployment. If username `admin` already exists, `ON DUPLICATE KEY UPDATE` leaves it untouched.
 
 The **`test` profile** disables Flyway and builds an H2 schema via Hibernate — **`V3` never runs in automated tests**, so suites stay deterministic without relying on SQL seed data.
 
-Real REST controllers for CRM resources (`/api/v1/customers`, …) arrive from **Step 7+**.
+**Step 7** adds JWT-protected REST controllers for **`/api/v1/customers`** and **`/api/v1/tickets`** (see [API reference](#endpoints-currently-implemented)).
 
 ### Error handling
 
@@ -406,6 +413,14 @@ this edge (e.g. validate the bearer early or re-apply IP limits for anonymous
 | `POST /api/v1/auth/login` | 200 / 401 / 429 | JSON `{ username, password }` → access + refresh tokens |
 | `POST /api/v1/auth/refresh` | 200 / 401 / 429 | JSON `{ refreshToken }` → rotates refresh row, new tokens |
 | `POST /api/v1/auth/logout` | 204 / 401 | JSON `{ refreshToken }` → deletes refresh row (session ends) |
+| `GET /api/v1/customers` | 200 / 401 / 403 | List customers (scope: **ADMIN** all, **AGENT** own creations, **CUSTOMER** linked profile) |
+| `GET /api/v1/customers/{id}` | 200 / 403 / 404 | Customer detail (same scope rules as list) |
+| `POST /api/v1/customers` | 201 / 400 / 401 / 403 / 409 | **ADMIN**, **AGENT** — JSON `{ email, displayName, phoneNumber? }`; conflict if email exists |
+| `PATCH /api/v1/customers/{id}` | 200 / 400 / 401 / 403 / 404 | **ADMIN**, **AGENT** — JSON `{ displayName, phoneNumber? }`; agent only for rows they created |
+| `GET /api/v1/tickets` | 200 / 401 / 403 | Optional query `customerId`, `status` — **CUSTOMER** sees own linked customer only; **AGENT** sees tickets for customers they created; **ADMIN** sees all |
+| `GET /api/v1/tickets/{id}` | 200 / 403 / 404 | Ticket detail with same read rules |
+| `POST /api/v1/tickets` | 201 / 400 / 401 / 403 / 404 | **ADMIN**, **AGENT** — JSON `{ customerId, subject, body? }`; agent only if they created the customer |
+| `PATCH /api/v1/tickets/{id}` | 200 / 400 / 401 / 403 / 404 | **ADMIN**, **AGENT** — partial update `{ subject?, body?, status?, assignedToAgentId? }`; empty body → 400 |
 | `GET /__test__/boom`      | varies | **dev-only**, exercises error pipeline  |
 | `POST /__test__/boom/validate` | varies | **dev-only**, demos validation/malformed |
 
@@ -526,25 +541,25 @@ Invoke-RestMethod -Uri "http://localhost:8080/api/v1/auth/logout" `
   -Body (@{ refreshToken = "PASTE_OPAQUE_REFRESH_TOKEN_HERE" } | ConvertTo-Json)
 ```
 
-#### Calling a protected route (Step 7+)
+#### Calling CRM endpoints with JWT (Step 7)
 
-Send the access JWT:
+Send the access JWT from login on **`/api/v1/customers`** or **`/api/v1/tickets`**:
 
 ```bash
-curl -sS "http://localhost:8080/api/v1/some-protected-resource" \
+curl -sS "http://localhost:8080/api/v1/customers" \
   -H "Authorization: Bearer PASTE_ACCESS_JWT_HERE"
 ```
 
 ```powershell
-Invoke-RestMethod -Uri "http://localhost:8080/api/v1/some-protected-resource" `
+Invoke-RestMethod -Uri "http://localhost:8080/api/v1/customers" `
   -Headers @{ Authorization = "Bearer PASTE_ACCESS_JWT_HERE" }
 ```
 
 **PowerShell:** use **`curl.exe`** for Unix-style `curl` flags (`-sS`, `-X`, `-d`). Plain **`curl`** is an alias for **`Invoke-WebRequest`**, which uses **`-Method`** instead of **`-X`** and different body rules.
 
 The `/__test__/boom` endpoint is **temporary** and gated by
-`surense.dev.boom-endpoint.enabled=true` (set only in dev profile). It will be
-removed in Step 7+ once real business endpoints exist. Supported `?type=`
+`surense.dev.boom-endpoint.enabled=true` (set only in dev profile). It may be
+removed in a later cleanup now that CRM routes exist. Supported `?type=`
 values: `ok`, `notfound`, `ticketnotfound`, `conflict`, `badrequest`,
 `notimplemented`, `forbidden`, `unauthenticated`, `unhandled`.
 
@@ -620,7 +635,8 @@ the raw message key) if a locale or key is missing.
 | 4b   | Rate limiting                                    | ✅ complete  |
 | 5    | DB schema & domain skeleton                      | ✅ complete  |
 | 6    | Auth: login / refresh / logout                   | ✅ complete  |
-| 7+   | Features (customers, tickets, …)                 | ⏳ planned   |
+| 7    | CRM: customers & tickets (role-aware REST)        | ✅ complete  |
+| 8+   | Further features / integrations                   | ⏳ planned   |
 
 ## License
 

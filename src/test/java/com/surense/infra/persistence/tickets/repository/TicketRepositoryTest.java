@@ -28,13 +28,13 @@ class TicketRepositoryTest {
     private UserRepository users;
 
     @Test
-    void persistsAndFindsByCustomerIdOrder() {
+    void persistsAndListsForCustomerNewestFirst() {
         User agent = users.save(new User("agent-ticket-test", "hash", UserRole.AGENT));
         Customer customer = customers.save(new Customer("ticket-owner@example.com", "Owner", agent));
         Ticket t = new Ticket(customer, "Printer on fire", TicketStatus.OPEN);
         tickets.save(t);
 
-        assertThat(tickets.findByCustomer_IdOrderByCreatedAtDesc(customer.getId()))
+        assertThat(tickets.listForCustomerNewestFirst(customer.getId()))
                 .singleElement()
                 .satisfies(x -> {
                     assertThat(x.getSubject()).isEqualTo("Printer on fire");
@@ -44,13 +44,13 @@ class TicketRepositoryTest {
     }
 
     @Test
-    void findByStatus() {
+    void listWithStatusNewestFirst_returnsMatchingTickets() {
         User agent = users.save(new User("agent-status", "hash", UserRole.AGENT));
         Customer c = customers.save(new Customer("status@example.com", "S", agent));
         tickets.save(new Ticket(c, "A", TicketStatus.OPEN));
         tickets.save(new Ticket(c, "B", TicketStatus.CLOSED));
 
-        assertThat(tickets.findByStatus(TicketStatus.OPEN)).hasSize(1);
-        assertThat(tickets.findByStatus(TicketStatus.CLOSED)).hasSize(1);
+        assertThat(tickets.listWithStatusNewestFirst(TicketStatus.OPEN)).hasSize(1);
+        assertThat(tickets.listWithStatusNewestFirst(TicketStatus.CLOSED)).hasSize(1);
     }
 }
